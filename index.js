@@ -13,13 +13,16 @@ import { defineSecret } from "firebase-functions/params";
 const API_KEY = defineSecret("API_KEY");
 
 // ------------------------------------------------------------
-// 🔹 Initialize Firebase Admin SDK with custom bucket
+// 🔹 Initialize Firebase Admin SDK
 // ------------------------------------------------------------
 if (!admin.apps.length) {
   admin.initializeApp({
     storageBucket: "prompto-4b381.firebasestorage.app", // ✅ your bucket
   });
 }
+
+// Initialize Firestore
+const db = admin.firestore();
 
 // Use default bucket (defined above)
 const storage = admin.storage().bucket();
@@ -63,86 +66,55 @@ const verifyAPIKey = (req, res, next) => {
 app.use(verifyAPIKey);
 
 // ------------------------------------------------------------
-// 🔹 Configuration: Dynamic Config from Firebase Storage
+// 🔹 Firestore Collections
 // ------------------------------------------------------------
-let configCache = null;
-let configLastFetched = null;
-const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
+const COLLECTIONS = {
+  CATEGORIES: 'categories',
+  PROMPTS: 'prompts',
+  PROMPT_DETAILS: 'promptDetails'
+};
 
-// ✅ Fetch configuration dynamically from Firebase Storage
-async function getConfig() {
-  const now = Date.now();
-
-  // Return cached config if still valid
-  if (configCache && configLastFetched && (now - configLastFetched < CONFIG_CACHE_TTL)) {
-    return configCache;
-  }
+// ------------------------------------------------------------
+// 🔹 Helper: Firestore Query with Pagination
+// ------------------------------------------------------------
+async function queryWithPagination(collectionRef, page = 1, limit = 10) {
+  // ✅ Validate and sanitize inputs
+  page = Math.max(1, parseInt(page) || 1);
+  limit = Math.min(100, Math.max(1, parseInt(limit) || 10)); // Max 100 items per page
 
   try {
-    console.log("📥 Fetching fresh configuration from Firebase Storage...");
-    const config = await fetchJSONFromStorage("config.json");
+    // Get total count
+    const countSnapshot = await collectionRef.count().get();
+    const total = countSnapshot.data().count;
 
-    // ✅ Validate configuration structure
-    if (!config.categoryMap || !config.promptDetailsFiles) {
-      throw new Error("Invalid config structure: missing categoryMap or promptDetailsFiles");
-    }
+    // Calculate pagination
+    const offset = (page - 1) * limit;
+    const totalPages = Math.ceil(total / limit);
 
-    configCache = config;
-    configLastFetched = now;
-    console.log("✅ Configuration loaded successfully");
+    // Fetch paginated data
+    const snapshot = await collectionRef
+      .offset(offset)
+      .limit(limit)
+      .get();
 
-    return config;
+    const data = snapshot.docs.map(doc => ({
+      _id: doc.id,
+      ...doc.data()
+    }));
+
+    return {
+      page,
+      limit,
+      total,
+      totalPages,
+      data
+    };
   } catch (error) {
-    console.error("❌ Failed to fetch configuration:", error.message);
-
-    // If we have cached config, use it even if expired
-    if (configCache) {
-      console.warn("⚠️ Using expired cache due to fetch error");
-      return configCache;
-    }
-
-    throw new Error("Configuration unavailable and no cache exists");
-  }
-}
-
-// ------------------------------------------------------------
-// 🔹 Helper: Fetch JSON from Firebase Storage
-// ------------------------------------------------------------
-async function fetchJSONFromStorage(fileName) {
-  try {
-    const file = storage.file(`data/${fileName}`);
-    const [exists] = await file.exists();
-    if (!exists) {
-      throw new Error(`FILE_NOT_FOUND: ${fileName}`);
-    }
-
-    const [contents] = await file.download();
-    return JSON.parse(contents.toString());
-  } catch (error) {
-    console.error("⚠️ Error fetching JSON:", error.message);
+    console.error("❌ Firestore pagination error:", error.message);
     throw error;
   }
 }
 
-// ------------------------------------------------------------
-// 🔹 Helper: Pagination with Validation
-// ------------------------------------------------------------
-function paginate(array, page = 1, limit = 10) {
-  // ✅ Validate and sanitize inputs
-  page = Math.max(1, parseInt(page) || 1);
-  limit = Math.min(100, Math.max(1, parseInt(limit) || 10)); // Max 100 items per page
-  
-  const start = (page - 1) * limit;
-  const end = start + limit;
-  
-  return {
-    page,
-    limit,
-    total: array.length,
-    totalPages: Math.ceil(array.length / limit),
-    data: array.slice(start, end),
-  };
-}
 
 // ------------------------------------------------------------
 // 🔹 Helper: Safe Error Response
@@ -175,7 +147,13 @@ app.get("/health", (req, res) => {
 // ------------------------------------------------------------
 app.get("/getCategory", async (req, res) => {
   try {
-    const data = await fetchJSONFromStorage("pt_category.json");
+    const snapshot = await db.collection(COLLECTIONS.CATEGORIES).get();
+
+    const data = snapshot.docs.map(doc => ({
+      _id: doc.id,
+      ...doc.data()
+    }));
+
     res.json({
       success: true,
       message: "Category list fetched successfully",
@@ -205,17 +183,12 @@ app.post("/getCategoryList", async (req, res) => {
       return sendErrorResponse(res, 400, "Missing or invalid 'id' parameter");
     }
 
-    // ✅ Get dynamic configuration
-    const config = await getConfig();
+    // ✅ Query prompts by categoryId with pagination
+    const promptsRef = db.collection(COLLECTIONS.PROMPTS)
+      .where('categoryId', '==', id)
+      .orderBy('createdAt', 'desc');
 
-    // ✅ Check if category exists
-    const fileName = config.categoryMap[id];
-    if (!fileName) {
-      return sendErrorResponse(res, 404, "Invalid category id");
-    }
-
-    const data = await fetchJSONFromStorage(fileName);
-    const paginated = paginate(data, page, limit);
+    const paginated = await queryWithPagination(promptsRef, page, limit);
 
     res.json({
       success: true,
@@ -244,36 +217,21 @@ app.post("/getPromptDetails", async (req, res) => {
       return sendErrorResponse(res, 400, "Missing or invalid '_id' parameter");
     }
 
-    // ✅ Get dynamic configuration
-    const config = await getConfig();
+    // ✅ Direct document lookup by ID (O(1) operation - super fast!)
+    const docRef = db.collection(COLLECTIONS.PROMPT_DETAILS).doc(_id);
+    const doc = await docRef.get();
 
-    // ✅ Search across ALL prompt detail files from config
-    let foundItem = null;
-
-    for (const fileName of config.promptDetailsFiles) {
-      try {
-        const data = await fetchJSONFromStorage(fileName);
-        const item = data.find((entry) => entry._id === _id);
-
-        if (item) {
-          foundItem = item;
-          break; // Found it, stop searching
-        }
-      } catch (fileError) {
-        // If file doesn't exist, continue to next file
-        console.warn(`⚠️ Could not fetch ${fileName}:`, fileError.message);
-        continue;
-      }
-    }
-
-    if (!foundItem) {
+    if (!doc.exists) {
       return sendErrorResponse(res, 404, "Prompt not found");
     }
 
     res.json({
       success: true,
       message: "Prompt details fetched successfully",
-      data: foundItem,
+      data: {
+        _id: doc.id,
+        ...doc.data()
+      },
     });
   } catch (error) {
     sendErrorResponse(
