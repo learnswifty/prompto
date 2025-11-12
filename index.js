@@ -25,7 +25,7 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 // Use default bucket (defined above)
-const storage = admin.storage().bucket();
+// const storage = admin.storage().bucket();
 
 // ------------------------------------------------------------
 // 🔹 Express app setup
@@ -69,9 +69,9 @@ app.use(verifyAPIKey);
 // 🔹 Firestore Collections
 // ------------------------------------------------------------
 const COLLECTIONS = {
-  CATEGORIES: 'categories',
-  PROMPTS: 'prompts',
-  PROMPT_DETAILS: 'promptDetails'
+  CATEGORIES: "categories",
+  PROMPTS: "prompts",
+  PROMPT_DETAILS: "promptDetails"
 };
 
 // ------------------------------------------------------------
@@ -185,8 +185,8 @@ app.post("/getCategoryList", async (req, res) => {
 
     // ✅ Query prompts by categoryId with pagination
     const promptsRef = db.collection(COLLECTIONS.PROMPTS)
-      .where('categoryId', '==', id)
-      .orderBy('createdAt', 'desc');
+      .where("categoryId", "==", id)
+      .orderBy("createdAt", "desc");
 
     const paginated = await queryWithPagination(promptsRef, page, limit);
 
