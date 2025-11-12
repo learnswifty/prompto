@@ -63,21 +63,47 @@ const verifyAPIKey = (req, res, next) => {
 app.use(verifyAPIKey);
 
 // ------------------------------------------------------------
-// 🔹 Configuration: Category & File Mappings
+// 🔹 Configuration: Dynamic Config from Firebase Storage
 // ------------------------------------------------------------
-const CATEGORY_MAP = {
-  "68b02e0a58d4d99aeb2854a7": "prompts_Trending.json",
-  "69130574acb1236b2a7a40d8": "prompts_DualPortrait.json",
-  "33be2fab88f08eabfdfcdbd1": "prompts_Editorial.json",
-  // 🆕 Add new mappings here
-};
+let configCache = null;
+let configLastFetched = null;
+const CONFIG_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache
 
-const PROMPT_DETAILS_FILES = [
-  "promptDetails_Trending.json",
-  "promptDetails_DualPortrait.json",
-  "promptDetails_Editorial.json",
-  // 🆕 Add new detail files here
-];
+// ✅ Fetch configuration dynamically from Firebase Storage
+async function getConfig() {
+  const now = Date.now();
+
+  // Return cached config if still valid
+  if (configCache && configLastFetched && (now - configLastFetched < CONFIG_CACHE_TTL)) {
+    return configCache;
+  }
+
+  try {
+    console.log("📥 Fetching fresh configuration from Firebase Storage...");
+    const config = await fetchJSONFromStorage("config.json");
+
+    // ✅ Validate configuration structure
+    if (!config.categoryMap || !config.promptDetailsFiles) {
+      throw new Error("Invalid config structure: missing categoryMap or promptDetailsFiles");
+    }
+
+    configCache = config;
+    configLastFetched = now;
+    console.log("✅ Configuration loaded successfully");
+
+    return config;
+  } catch (error) {
+    console.error("❌ Failed to fetch configuration:", error.message);
+
+    // If we have cached config, use it even if expired
+    if (configCache) {
+      console.warn("⚠️ Using expired cache due to fetch error");
+      return configCache;
+    }
+
+    throw new Error("Configuration unavailable and no cache exists");
+  }
+}
 
 // ------------------------------------------------------------
 // 🔹 Helper: Fetch JSON from Firebase Storage
@@ -179,8 +205,11 @@ app.post("/getCategoryList", async (req, res) => {
       return sendErrorResponse(res, 400, "Missing or invalid 'id' parameter");
     }
 
+    // ✅ Get dynamic configuration
+    const config = await getConfig();
+
     // ✅ Check if category exists
-    const fileName = CATEGORY_MAP[id];
+    const fileName = config.categoryMap[id];
     if (!fileName) {
       return sendErrorResponse(res, 404, "Invalid category id");
     }
@@ -209,20 +238,23 @@ app.post("/getCategoryList", async (req, res) => {
 app.post("/getPromptDetails", async (req, res) => {
   try {
     const { _id } = req.body;
-    
+
     // ✅ Validate required parameters
     if (!_id || typeof _id !== "string") {
       return sendErrorResponse(res, 400, "Missing or invalid '_id' parameter");
     }
 
-    // ✅ FIXED: Search across ALL prompt detail files, not just Trending
+    // ✅ Get dynamic configuration
+    const config = await getConfig();
+
+    // ✅ Search across ALL prompt detail files from config
     let foundItem = null;
-    
-    for (const fileName of PROMPT_DETAILS_FILES) {
+
+    for (const fileName of config.promptDetailsFiles) {
       try {
         const data = await fetchJSONFromStorage(fileName);
         const item = data.find((entry) => entry._id === _id);
-        
+
         if (item) {
           foundItem = item;
           break; // Found it, stop searching
