@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ------------------------------------------------------------
+    // Categories Collection
+    // ------------------------------------------------------------
+    match /categories/{categoryId} {
+      // Public read access
+      allow read: if true;
+
+      // Write access restricted (use Cloud Functions for writes)
+      allow write: if false;
+    }
+
+    // ------------------------------------------------------------
+    // Prompts Collection
+    // ------------------------------------------------------------
+    match /prompts/{promptId} {
+      // Public read access
+      allow read: if true;
+
+      // Write access restricted (use Cloud Functions for writes)
+      allow write: if false;
+    }
+
+    // ------------------------------------------------------------
+    // Prompt Details Collection
+    // ------------------------------------------------------------
+    match /promptDetails/{promptId} {
+      // Public read access
+      allow read: if true;
+
+      // Write access restricted (use Cloud Functions for writes)
+      allow write: if false;
+    }
+
+    // ------------------------------------------------------------
+    // Default deny all other collections
+    // ------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

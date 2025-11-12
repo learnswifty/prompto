@@ -1,0 +1,12 @@
+{
+  "categoryMap": {
+    "68b02e0a58d4d99aeb2854a7": "prompts_Trending.json",
+    "69130574acb1236b2a7a40d8": "prompts_DualPortrait.json",
+    "33be2fab88f08eabfdfcdbd1": "prompts_Editorial.json"
+  },
+  "promptDetailsFiles": [
+    "promptDetails_Trending.json",
+    "promptDetails_DualPortrait.json",
+    "promptDetails_Editorial.json"
+  ]
+}

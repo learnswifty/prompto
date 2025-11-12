@@ -13,13 +13,16 @@ import { defineSecret } from "firebase-functions/params";
 const API_KEY = defineSecret("API_KEY");
 
 // ------------------------------------------------------------
-// 🔹 Initialize Firebase Admin SDK with custom bucket
+// 🔹 Initialize Firebase Admin SDK
 // ------------------------------------------------------------
 if (!admin.apps.length) {
   admin.initializeApp({
     storageBucket: "prompto-4b381.firebasestorage.app", // ✅ your bucket
   });
 }
+
+// Initialize Firestore
+const db = admin.firestore();
 
 // Use default bucket (defined above)
 const storage = admin.storage().bucket();
@@ -63,60 +66,55 @@ const verifyAPIKey = (req, res, next) => {
 app.use(verifyAPIKey);
 
 // ------------------------------------------------------------
-// 🔹 Configuration: Category & File Mappings
+// 🔹 Firestore Collections
 // ------------------------------------------------------------
-const CATEGORY_MAP = {
-  "68b02e0a58d4d99aeb2854a7": "prompts_Trending.json",
-  "69130574acb1236b2a7a40d8": "prompts_DualPortrait.json",
-  "33be2fab88f08eabfdfcdbd1": "prompts_Editorial.json",
-  // 🆕 Add new mappings here
+const COLLECTIONS = {
+  CATEGORIES: 'categories',
+  PROMPTS: 'prompts',
+  PROMPT_DETAILS: 'promptDetails'
 };
 
-const PROMPT_DETAILS_FILES = [
-  "promptDetails_Trending.json",
-  "promptDetails_DualPortrait.json",
-  "promptDetails_Editorial.json",
-  // 🆕 Add new detail files here
-];
+// ------------------------------------------------------------
+// 🔹 Helper: Firestore Query with Pagination
+// ------------------------------------------------------------
+async function queryWithPagination(collectionRef, page = 1, limit = 10) {
+  // ✅ Validate and sanitize inputs
+  page = Math.max(1, parseInt(page) || 1);
+  limit = Math.min(100, Math.max(1, parseInt(limit) || 10)); // Max 100 items per page
 
-// ------------------------------------------------------------
-// 🔹 Helper: Fetch JSON from Firebase Storage
-// ------------------------------------------------------------
-async function fetchJSONFromStorage(fileName) {
   try {
-    const file = storage.file(`data/${fileName}`);
-    const [exists] = await file.exists();
-    if (!exists) {
-      throw new Error(`FILE_NOT_FOUND: ${fileName}`);
-    }
+    // Get total count
+    const countSnapshot = await collectionRef.count().get();
+    const total = countSnapshot.data().count;
 
-    const [contents] = await file.download();
-    return JSON.parse(contents.toString());
+    // Calculate pagination
+    const offset = (page - 1) * limit;
+    const totalPages = Math.ceil(total / limit);
+
+    // Fetch paginated data
+    const snapshot = await collectionRef
+      .offset(offset)
+      .limit(limit)
+      .get();
+
+    const data = snapshot.docs.map(doc => ({
+      _id: doc.id,
+      ...doc.data()
+    }));
+
+    return {
+      page,
+      limit,
+      total,
+      totalPages,
+      data
+    };
   } catch (error) {
-    console.error("⚠️ Error fetching JSON:", error.message);
+    console.error("❌ Firestore pagination error:", error.message);
     throw error;
   }
 }
 
-// ------------------------------------------------------------
-// 🔹 Helper: Pagination with Validation
-// ------------------------------------------------------------
-function paginate(array, page = 1, limit = 10) {
-  // ✅ Validate and sanitize inputs
-  page = Math.max(1, parseInt(page) || 1);
-  limit = Math.min(100, Math.max(1, parseInt(limit) || 10)); // Max 100 items per page
-  
-  const start = (page - 1) * limit;
-  const end = start + limit;
-  
-  return {
-    page,
-    limit,
-    total: array.length,
-    totalPages: Math.ceil(array.length / limit),
-    data: array.slice(start, end),
-  };
-}
 
 // ------------------------------------------------------------
 // 🔹 Helper: Safe Error Response
@@ -149,7 +147,13 @@ app.get("/health", (req, res) => {
 // ------------------------------------------------------------
 app.get("/getCategory", async (req, res) => {
   try {
-    const data = await fetchJSONFromStorage("pt_category.json");
+    const snapshot = await db.collection(COLLECTIONS.CATEGORIES).get();
+
+    const data = snapshot.docs.map(doc => ({
+      _id: doc.id,
+      ...doc.data()
+    }));
+
     res.json({
       success: true,
       message: "Category list fetched successfully",
@@ -179,14 +183,12 @@ app.post("/getCategoryList", async (req, res) => {
       return sendErrorResponse(res, 400, "Missing or invalid 'id' parameter");
     }
 
-    // ✅ Check if category exists
-    const fileName = CATEGORY_MAP[id];
-    if (!fileName) {
-      return sendErrorResponse(res, 404, "Invalid category id");
-    }
+    // ✅ Query prompts by categoryId with pagination
+    const promptsRef = db.collection(COLLECTIONS.PROMPTS)
+      .where('categoryId', '==', id)
+      .orderBy('createdAt', 'desc');
 
-    const data = await fetchJSONFromStorage(fileName);
-    const paginated = paginate(data, page, limit);
+    const paginated = await queryWithPagination(promptsRef, page, limit);
 
     res.json({
       success: true,
@@ -209,39 +211,27 @@ app.post("/getCategoryList", async (req, res) => {
 app.post("/getPromptDetails", async (req, res) => {
   try {
     const { _id } = req.body;
-    
+
     // ✅ Validate required parameters
     if (!_id || typeof _id !== "string") {
       return sendErrorResponse(res, 400, "Missing or invalid '_id' parameter");
     }
 
-    // ✅ FIXED: Search across ALL prompt detail files, not just Trending
-    let foundItem = null;
-    
-    for (const fileName of PROMPT_DETAILS_FILES) {
-      try {
-        const data = await fetchJSONFromStorage(fileName);
-        const item = data.find((entry) => entry._id === _id);
-        
-        if (item) {
-          foundItem = item;
-          break; // Found it, stop searching
-        }
-      } catch (fileError) {
-        // If file doesn't exist, continue to next file
-        console.warn(`⚠️ Could not fetch ${fileName}:`, fileError.message);
-        continue;
-      }
-    }
+    // ✅ Direct document lookup by ID (O(1) operation - super fast!)
+    const docRef = db.collection(COLLECTIONS.PROMPT_DETAILS).doc(_id);
+    const doc = await docRef.get();
 
-    if (!foundItem) {
+    if (!doc.exists) {
       return sendErrorResponse(res, 404, "Prompt not found");
     }
 
     res.json({
       success: true,
       message: "Prompt details fetched successfully",
-      data: foundItem,
+      data: {
+        _id: doc.id,
+        ...doc.data()
+      },
     });
   } catch (error) {
     sendErrorResponse(
