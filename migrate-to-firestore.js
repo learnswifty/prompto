@@ -338,9 +338,42 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true, mo
 // ------------------------------------------------------------
 // 🔹 Build Category Name to ID mapping
 // ------------------------------------------------------------
-async function buildCategoryMapping(categoriesData) {
+async function buildCategoryMapping(categoriesData, mode = "fresh") {
   const mapping = {};
 
+  // If in update mode and we have existing categories in Firestore, fetch them
+  if (mode === "update") {
+    try {
+      console.log(`\n🗺️  Building category mapping from Firestore...`);
+      const snapshot = await db.collection(COLLECTIONS.CATEGORIES).get();
+
+      snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const name = data.name || data.categoryName || data.title;
+        const id = doc.id;
+
+        if (name && id) {
+          mapping[name] = id;
+          // Also add lowercase version for case-insensitive matching
+          mapping[name.toLowerCase()] = id;
+        }
+      });
+
+      console.log(`   ✅ Loaded ${snapshot.size} categories from Firestore`);
+      console.log(`\n🗺️  Category mapping:`);
+      Object.entries(mapping).forEach(([name, id]) => {
+        if (name === name.toLowerCase()) return; // Skip lowercase duplicates in display
+        console.log(`   ${name} → ${id}`);
+      });
+
+      return mapping;
+    } catch (error) {
+      console.error(`❌ Error fetching categories from Firestore:`, error.message);
+      // Fall back to using categoriesData
+    }
+  }
+
+  // Fresh mode or fallback: use provided categoriesData
   categoriesData.forEach(category => {
     // Try multiple possible name fields
     const name = category.name || category.categoryName || category.title;
@@ -549,8 +582,12 @@ async function main() {
 
     // Step 5: Build category mapping for linking prompts
     let categoryMapping = null;
-    if (categoriesResult.data && categoriesResult.data.length > 0) {
-      categoryMapping = await buildCategoryMapping(categoriesResult.data);
+    if (mode === "update") {
+      // In update mode, always try to build mapping from Firestore (even if no new categories)
+      categoryMapping = await buildCategoryMapping(categoriesResult.data, mode);
+    } else if (categoriesResult.data && categoriesResult.data.length > 0) {
+      // In fresh/force mode, use the imported data
+      categoryMapping = await buildCategoryMapping(categoriesResult.data, mode);
     }
 
     // Step 6: Migrate prompts with category links
