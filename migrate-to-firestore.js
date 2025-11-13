@@ -1,17 +1,23 @@
 #!/usr/bin/env node
 
 // ------------------------------------------------------------
-// 🔹 Firestore Migration Script
+// 🔹 Dynamic Firestore Migration Script
 // ------------------------------------------------------------
-// This script migrates JSON files from Firebase Storage to Firestore
+// This script automatically discovers and migrates JSON files
+// from Firebase Storage (data/ folder) to Firestore
 //
 // Usage:
 //   node migrate-to-firestore.js
 //
 // Prerequisites:
 //   1. Firebase Admin SDK initialized
-//   2. JSON files in Firebase Storage at data/ folder
-//   3. Service account credentials configured
+//   2. JSON files uploaded to Firebase Storage in data/ folder
+//   3. Service account credentials configured (serviceAccountKey.json)
+//
+// File naming conventions:
+//   - *category*.json → categories collection
+//   - prompts_*.json → prompts collection
+//   - promptDetails_*.json → promptDetails collection
 // ------------------------------------------------------------
 
 import admin from "firebase-admin";
@@ -21,7 +27,6 @@ import { resolve } from "path";
 // ------------------------------------------------------------
 // 🔹 Initialize Firebase Admin SDK
 // ------------------------------------------------------------
-// Load service account key
 const serviceAccount = JSON.parse(
   readFileSync(resolve("./serviceAccountKey.json"), "utf8")
 );
@@ -45,46 +50,72 @@ const COLLECTIONS = {
   PROMPT_DETAILS: "promptDetails"
 };
 
-// Mapping of your JSON files to Firestore collections
-const MIGRATION_CONFIG = {
-  categories: {
-    file: "pt_category.json",
-    collection: COLLECTIONS.CATEGORIES,
-    // Optional: transform function to modify data before upload
-    transform: (item) => ({
-      ...item,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    })
-  },
-  prompts: {
-    files: [
-      { name: "prompts_Trending.json", categoryId: "68b02e0a58d4d99aeb2854a7" },
-      { name: "prompts_DualPortrait.json", categoryId: "69130574acb1236b2a7a40d8" },
-      { name: "prompts_Editorial.json", categoryId: "33be2fab88f08eabfdfcdbd1" }
-    ],
-    collection: COLLECTIONS.PROMPTS,
-    transform: (item, categoryId) => ({
-      ...item,
-      categoryId,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    })
-  },
-  promptDetails: {
-    files: [
-      "promptDetails_Trending.json",
-      "promptDetails_DualPortrait.json",
-      "promptDetails_Editorial.json"
-    ],
-    collection: COLLECTIONS.PROMPT_DETAILS,
-    transform: (item) => ({
-      ...item,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp()
-    })
+const DATA_FOLDER = "data/";
+
+// ------------------------------------------------------------
+// 🔹 Helper: List all files in Storage
+// ------------------------------------------------------------
+async function listFilesInStorage(prefix = DATA_FOLDER) {
+  try {
+    console.log(`\n🔍 Discovering files in Storage: ${prefix}`);
+    const [files] = await storage.getFiles({ prefix });
+
+    const jsonFiles = files
+      .filter(file => file.name.endsWith(".json"))
+      .map(file => file.name.replace(prefix, ""));
+
+    console.log(`✅ Found ${jsonFiles.length} JSON files:`);
+    jsonFiles.forEach(file => console.log(`   📄 ${file}`));
+
+    return jsonFiles;
+  } catch (error) {
+    console.error(`❌ Error listing files:`, error.message);
+    throw error;
   }
-};
+}
+
+// ------------------------------------------------------------
+// 🔹 Helper: Categorize files by type
+// ------------------------------------------------------------
+function categorizeFiles(fileNames) {
+  const categorized = {
+    categories: [],
+    prompts: [],
+    promptDetails: []
+  };
+
+  fileNames.forEach(fileName => {
+    const lowerName = fileName.toLowerCase();
+
+    if (lowerName.includes("category") || lowerName.startsWith("pt_category")) {
+      categorized.categories.push(fileName);
+    } else if (lowerName.startsWith("prompts_")) {
+      categorized.prompts.push(fileName);
+    } else if (lowerName.startsWith("promptdetails_")) {
+      categorized.promptDetails.push(fileName);
+    } else {
+      console.warn(`⚠️  Skipping unrecognized file: ${fileName}`);
+    }
+  });
+
+  console.log(`\n📊 File categorization:`);
+  console.log(`   Categories: ${categorized.categories.length} files`);
+  console.log(`   Prompts: ${categorized.prompts.length} files`);
+  console.log(`   Prompt Details: ${categorized.promptDetails.length} files`);
+
+  return categorized;
+}
+
+// ------------------------------------------------------------
+// 🔹 Helper: Extract category name from filename
+// ------------------------------------------------------------
+function extractCategoryName(fileName) {
+  // Extract category name from patterns like:
+  // "prompts_Trending.json" → "Trending"
+  // "promptDetails_DualPortrait.json" → "DualPortrait"
+  const match = fileName.match(/(?:prompts_|promptDetails_)(.+)\.json$/i);
+  return match ? match[1] : null;
+}
 
 // ------------------------------------------------------------
 // 🔹 Helper: Fetch JSON from Storage
@@ -92,7 +123,7 @@ const MIGRATION_CONFIG = {
 async function fetchJSONFromStorage(fileName) {
   try {
     console.log(`📥 Downloading ${fileName}...`);
-    const file = storage.file(`data/${fileName}`);
+    const file = storage.file(`${DATA_FOLDER}${fileName}`);
     const [exists] = await file.exists();
 
     if (!exists) {
@@ -111,6 +142,11 @@ async function fetchJSONFromStorage(fileName) {
 // 🔹 Helper: Batch Write to Firestore
 // ------------------------------------------------------------
 async function batchWriteToFirestore(collectionName, data, useIdField = true) {
+  if (!data || data.length === 0) {
+    console.log(`⚠️  No data to write to ${collectionName}`);
+    return { successCount: 0, errorCount: 0 };
+  }
+
   console.log(`\n📝 Writing ${data.length} documents to ${collectionName}...`);
 
   const batchSize = 500; // Firestore batch limit
@@ -130,7 +166,7 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true) {
           : db.collection(collectionName).doc();
 
         // Remove _id from data if it exists (it's stored as document ID)
-        const { ...dataWithoutId } = item;
+        const { _id, ...dataWithoutId } = item;
 
         batch.set(docRef, dataWithoutId);
         successCount++;
@@ -158,44 +194,108 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true) {
 }
 
 // ------------------------------------------------------------
+// 🔹 Build Category Name to ID mapping
+// ------------------------------------------------------------
+async function buildCategoryMapping(categoriesData) {
+  const mapping = {};
+
+  categoriesData.forEach(category => {
+    // Try multiple possible name fields
+    const name = category.name || category.categoryName || category.title;
+    const id = category._id || category.id;
+
+    if (name && id) {
+      mapping[name] = id;
+      // Also add lowercase version for case-insensitive matching
+      mapping[name.toLowerCase()] = id;
+    }
+  });
+
+  console.log(`\n🗺️  Category mapping created:`);
+  Object.entries(mapping).forEach(([name, id]) => {
+    if (name === name.toLowerCase()) return; // Skip lowercase duplicates in display
+    console.log(`   ${name} → ${id}`);
+  });
+
+  return mapping;
+}
+
+// ------------------------------------------------------------
 // 🔹 Migrate Categories
 // ------------------------------------------------------------
-async function migrateCategories() {
+async function migrateCategories(categoryFiles) {
   console.log("\n" + "=".repeat(60));
   console.log("🏷️  MIGRATING CATEGORIES");
   console.log("=".repeat(60));
 
-  const config = MIGRATION_CONFIG.categories;
-  const data = await fetchJSONFromStorage(config.file);
+  if (categoryFiles.length === 0) {
+    console.log("⚠️  No category files found");
+    return { successCount: 0, errorCount: 0, data: [] };
+  }
 
-  const transformedData = config.transform
-    ? data.map(item => config.transform(item))
-    : data;
+  let allCategoriesData = [];
 
-  return await batchWriteToFirestore(config.collection, transformedData, true);
+  for (const fileName of categoryFiles) {
+    const data = await fetchJSONFromStorage(fileName);
+
+    const transformedData = data.map(item => ({
+      ...item,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }));
+
+    allCategoriesData = [...allCategoriesData, ...transformedData];
+  }
+
+  const result = await batchWriteToFirestore(COLLECTIONS.CATEGORIES, allCategoriesData, true);
+
+  return { ...result, data: allCategoriesData };
 }
 
 // ------------------------------------------------------------
 // 🔹 Migrate Prompts
 // ------------------------------------------------------------
-async function migratePrompts() {
+async function migratePrompts(promptFiles, categoryMapping) {
   console.log("\n" + "=".repeat(60));
   console.log("📝 MIGRATING PROMPTS");
   console.log("=".repeat(60));
 
-  const config = MIGRATION_CONFIG.prompts;
+  if (promptFiles.length === 0) {
+    console.log("⚠️  No prompt files found");
+    return { successCount: 0, errorCount: 0 };
+  }
+
   let totalSuccess = 0;
   let totalErrors = 0;
 
-  for (const fileConfig of config.files) {
-    console.log(`\n📂 Processing ${fileConfig.name}...`);
-    const data = await fetchJSONFromStorage(fileConfig.name);
+  for (const fileName of promptFiles) {
+    console.log(`\n📂 Processing ${fileName}...`);
 
-    const transformedData = config.transform
-      ? data.map(item => config.transform(item, fileConfig.categoryId))
-      : data.map(item => ({ ...item, categoryId: fileConfig.categoryId }));
+    // Extract category name from filename
+    const categoryName = extractCategoryName(fileName);
+    let categoryId = null;
 
-    const result = await batchWriteToFirestore(config.collection, transformedData, true);
+    if (categoryName && categoryMapping) {
+      // Try exact match first, then case-insensitive
+      categoryId = categoryMapping[categoryName] || categoryMapping[categoryName.toLowerCase()];
+
+      if (categoryId) {
+        console.log(`   🔗 Linked to category: ${categoryName} (${categoryId})`);
+      } else {
+        console.warn(`   ⚠️  Could not find category ID for: ${categoryName}`);
+      }
+    }
+
+    const data = await fetchJSONFromStorage(fileName);
+
+    const transformedData = data.map(item => ({
+      ...item,
+      ...(categoryId && { categoryId }), // Add categoryId if found
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }));
+
+    const result = await batchWriteToFirestore(COLLECTIONS.PROMPTS, transformedData, true);
     totalSuccess += result.successCount;
     totalErrors += result.errorCount;
   }
@@ -210,24 +310,30 @@ async function migratePrompts() {
 // ------------------------------------------------------------
 // 🔹 Migrate Prompt Details
 // ------------------------------------------------------------
-async function migratePromptDetails() {
+async function migratePromptDetails(promptDetailFiles) {
   console.log("\n" + "=".repeat(60));
   console.log("📄 MIGRATING PROMPT DETAILS");
   console.log("=".repeat(60));
 
-  const config = MIGRATION_CONFIG.promptDetails;
+  if (promptDetailFiles.length === 0) {
+    console.log("⚠️  No prompt detail files found");
+    return { successCount: 0, errorCount: 0 };
+  }
+
   let totalSuccess = 0;
   let totalErrors = 0;
 
-  for (const fileName of config.files) {
+  for (const fileName of promptDetailFiles) {
     console.log(`\n📂 Processing ${fileName}...`);
     const data = await fetchJSONFromStorage(fileName);
 
-    const transformedData = config.transform
-      ? data.map(item => config.transform(item))
-      : data;
+    const transformedData = data.map(item => ({
+      ...item,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }));
 
-    const result = await batchWriteToFirestore(config.collection, transformedData, true);
+    const result = await batchWriteToFirestore(COLLECTIONS.PROMPT_DETAILS, transformedData, true);
     totalSuccess += result.successCount;
     totalErrors += result.errorCount;
   }
@@ -240,9 +346,9 @@ async function migratePromptDetails() {
 }
 
 // ------------------------------------------------------------
-// 🔹 Create Firestore Indexes
+// 🔹 Display Index Instructions
 // ------------------------------------------------------------
-async function createIndexes() {
+function displayIndexInstructions() {
   console.log("\n" + "=".repeat(60));
   console.log("🔍 FIRESTORE INDEXES NEEDED");
   console.log("=".repeat(60));
@@ -260,31 +366,53 @@ async function createIndexes() {
 // ------------------------------------------------------------
 async function main() {
   console.log("\n" + "=".repeat(60));
-  console.log("🚀 STARTING FIRESTORE MIGRATION");
+  console.log("🚀 DYNAMIC FIRESTORE MIGRATION");
   console.log("=".repeat(60));
 
   try {
-    const results = {
-      categories: await migrateCategories(),
-      prompts: await migratePrompts(),
-      promptDetails: await migratePromptDetails()
-    };
+    // Step 1: Discover all JSON files in storage
+    const allFiles = await listFilesInStorage();
 
+    if (allFiles.length === 0) {
+      console.log("\n⚠️  No JSON files found in storage. Please upload your files to the 'data/' folder.");
+      return;
+    }
+
+    // Step 2: Categorize files by type
+    const categorizedFiles = categorizeFiles(allFiles);
+
+    // Step 3: Migrate categories first
+    const categoriesResult = await migrateCategories(categorizedFiles.categories);
+
+    // Step 4: Build category mapping for linking prompts
+    let categoryMapping = null;
+    if (categoriesResult.data && categoriesResult.data.length > 0) {
+      categoryMapping = await buildCategoryMapping(categoriesResult.data);
+    }
+
+    // Step 5: Migrate prompts with category links
+    const promptsResult = await migratePrompts(categorizedFiles.prompts, categoryMapping);
+
+    // Step 6: Migrate prompt details
+    const promptDetailsResult = await migratePromptDetails(categorizedFiles.promptDetails);
+
+    // Summary
     console.log("\n" + "=".repeat(60));
     console.log("✅ MIGRATION COMPLETE");
     console.log("=".repeat(60));
     console.log("\n📊 SUMMARY:");
-    console.log(`   Categories: ${results.categories.successCount} success, ${results.categories.errorCount} errors`);
-    console.log(`   Prompts: ${results.prompts.successCount} success, ${results.prompts.errorCount} errors`);
-    console.log(`   Prompt Details: ${results.promptDetails.successCount} success, ${results.promptDetails.errorCount} errors`);
+    console.log(`   Categories: ${categoriesResult.successCount} success, ${categoriesResult.errorCount} errors`);
+    console.log(`   Prompts: ${promptsResult.successCount} success, ${promptsResult.errorCount} errors`);
+    console.log(`   Prompt Details: ${promptDetailsResult.successCount} success, ${promptDetailsResult.errorCount} errors`);
 
-    await createIndexes();
+    displayIndexInstructions();
 
     console.log("\n" + "=".repeat(60));
     console.log("🎉 ALL DONE!");
     console.log("=".repeat(60));
   } catch (error) {
     console.error("\n❌ Migration failed:", error);
+    console.error("\nStack trace:", error.stack);
     process.exit(1);
   }
 }
