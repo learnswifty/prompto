@@ -15,8 +15,8 @@
 // ------------------------------------------------------------
 
 import admin from "firebase-admin";
-import { readFileSync } from "fs";
-import { resolve } from "path";
+// import { readFileSync } from "fs";
+// import { resolve } from "path";
 
 // ------------------------------------------------------------
 // 🔹 Initialize Firebase Admin SDK
@@ -40,9 +40,9 @@ const storage = admin.storage().bucket();
 // 🔹 Configuration
 // ------------------------------------------------------------
 const COLLECTIONS = {
-  CATEGORIES: 'categories',
-  PROMPTS: 'prompts',
-  PROMPT_DETAILS: 'promptDetails'
+  CATEGORIES: "categories",
+  PROMPTS: "prompts",
+  PROMPT_DETAILS: "promptDetails"
 };
 
 // Mapping of your JSON files to Firestore collections
@@ -130,7 +130,7 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true) {
           : db.collection(collectionName).doc();
 
         // Remove _id from data if it exists (it's stored as document ID)
-        const { _id, ...dataWithoutId } = item;
+        const { ...dataWithoutId } = item;
 
         batch.set(docRef, dataWithoutId);
         successCount++;
