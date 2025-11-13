@@ -139,6 +139,56 @@ async function fetchJSONFromStorage(fileName) {
 }
 
 // ------------------------------------------------------------
+// 🔹 Helper: Extract Array from JSON (handles various structures)
+// ------------------------------------------------------------
+function extractArrayFromJSON(data, fileName) {
+  // If data is already an array, return it
+  if (Array.isArray(data)) {
+    console.log(`   ✅ Direct array structure detected (${data.length} items)`);
+    return data;
+  }
+
+  // If data is an object, try to find the array inside
+  if (typeof data === "object" && data !== null) {
+    // Try common property names
+    const possibleKeys = [
+      "data",
+      "items",
+      "results",
+      "categories",
+      "prompts",
+      "promptDetails",
+      "list",
+      "records"
+    ];
+
+    for (const key of possibleKeys) {
+      if (Array.isArray(data[key])) {
+        console.log(`   ✅ Found array in property '${key}' (${data[key].length} items)`);
+        return data[key];
+      }
+    }
+
+    // If no common keys found, try to get the first array property
+    const keys = Object.keys(data);
+    for (const key of keys) {
+      if (Array.isArray(data[key])) {
+        console.log(`   ✅ Found array in property '${key}' (${data[key].length} items)`);
+        return data[key];
+      }
+    }
+
+    // If still no array found, log the structure
+    console.error(`   ❌ Could not find array in JSON structure.`);
+    console.error(`   Available properties: ${keys.join(", ")}`);
+    console.error(`   File: ${fileName}`);
+    throw new Error(`No array found in JSON file: ${fileName}`);
+  }
+
+  throw new Error(`Invalid JSON structure in file: ${fileName}`);
+}
+
+// ------------------------------------------------------------
 // 🔹 Helper: Batch Write to Firestore
 // ------------------------------------------------------------
 async function batchWriteToFirestore(collectionName, data, useIdField = true) {
@@ -236,7 +286,8 @@ async function migrateCategories(categoryFiles) {
   let allCategoriesData = [];
 
   for (const fileName of categoryFiles) {
-    const data = await fetchJSONFromStorage(fileName);
+    const rawData = await fetchJSONFromStorage(fileName);
+    const data = extractArrayFromJSON(rawData, fileName);
 
     const transformedData = data.map(item => ({
       ...item,
@@ -286,7 +337,8 @@ async function migratePrompts(promptFiles, categoryMapping) {
       }
     }
 
-    const data = await fetchJSONFromStorage(fileName);
+    const rawData = await fetchJSONFromStorage(fileName);
+    const data = extractArrayFromJSON(rawData, fileName);
 
     const transformedData = data.map(item => ({
       ...item,
@@ -325,7 +377,8 @@ async function migratePromptDetails(promptDetailFiles) {
 
   for (const fileName of promptDetailFiles) {
     console.log(`\n📂 Processing ${fileName}...`);
-    const data = await fetchJSONFromStorage(fileName);
+    const rawData = await fetchJSONFromStorage(fileName);
+    const data = extractArrayFromJSON(rawData, fileName);
 
     const transformedData = data.map(item => ({
       ...item,
