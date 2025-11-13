@@ -7,7 +7,18 @@
 // from Firebase Storage (data/ folder) to Firestore
 //
 // Usage:
-//   node migrate-to-firestore.js
+//   node migrate-to-firestore.js [mode]
+//
+// Modes:
+//   fresh    - Delete all data and re-import everything (default for first run)
+//   update   - Only add new documents, skip existing ones (recommended)
+//   force    - Update all documents, overwrite existing ones
+//
+// Examples:
+//   node migrate-to-firestore.js           # Auto-detect mode
+//   node migrate-to-firestore.js update    # Incremental update
+//   node migrate-to-firestore.js fresh     # Fresh import
+//   node migrate-to-firestore.js force     # Force update all
 //
 // Prerequisites:
 //   1. Firebase Admin SDK initialized
@@ -51,6 +62,57 @@ const COLLECTIONS = {
 };
 
 const DATA_FOLDER = "data/";
+
+// Parse command line arguments
+const args = process.argv.slice(2);
+const MIGRATION_MODE = args[0] || "auto"; // auto, fresh, update, force
+
+// ------------------------------------------------------------
+// 🔹 Helper: Check if collection has data
+// ------------------------------------------------------------
+async function hasExistingData(collectionName) {
+  try {
+    const snapshot = await db.collection(collectionName).limit(1).get();
+    return !snapshot.empty;
+  } catch (error) {
+    return false;
+  }
+}
+
+// ------------------------------------------------------------
+// 🔹 Helper: Get existing document IDs
+// ------------------------------------------------------------
+async function getExistingDocIds(collectionName) {
+  try {
+    const snapshot = await db.collection(collectionName).select().get();
+    return new Set(snapshot.docs.map(doc => doc.id));
+  } catch (error) {
+    console.error(`❌ Error getting existing IDs:`, error.message);
+    return new Set();
+  }
+}
+
+// ------------------------------------------------------------
+// 🔹 Helper: Determine migration mode
+// ------------------------------------------------------------
+async function determineMigrationMode() {
+  if (MIGRATION_MODE !== "auto") {
+    return MIGRATION_MODE;
+  }
+
+  // Auto-detect: if any collection has data, use 'update' mode, otherwise 'fresh'
+  const hasCategories = await hasExistingData(COLLECTIONS.CATEGORIES);
+  const hasPrompts = await hasExistingData(COLLECTIONS.PROMPTS);
+  const hasDetails = await hasExistingData(COLLECTIONS.PROMPT_DETAILS);
+
+  if (hasCategories || hasPrompts || hasDetails) {
+    console.log("🔍 Detected existing data. Using 'update' mode (incremental).");
+    return "update";
+  } else {
+    console.log("🔍 No existing data found. Using 'fresh' mode.");
+    return "fresh";
+  }
+}
 
 // ------------------------------------------------------------
 // 🔹 Helper: List all files in Storage
@@ -189,28 +251,45 @@ function extractArrayFromJSON(data, fileName) {
 }
 
 // ------------------------------------------------------------
-// 🔹 Helper: Batch Write to Firestore
+// 🔹 Helper: Batch Write to Firestore (with incremental support)
 // ------------------------------------------------------------
-async function batchWriteToFirestore(collectionName, data, useIdField = true) {
+async function batchWriteToFirestore(collectionName, data, useIdField = true, mode = "fresh") {
   if (!data || data.length === 0) {
     console.log(`⚠️  No data to write to ${collectionName}`);
-    return { successCount: 0, errorCount: 0 };
+    return { successCount: 0, errorCount: 0, skippedCount: 0 };
   }
 
-  console.log(`\n📝 Writing ${data.length} documents to ${collectionName}...`);
+  console.log(`\n📝 Processing ${data.length} documents for ${collectionName} (mode: ${mode})...`);
+
+  // Get existing document IDs if in update mode
+  let existingIds = new Set();
+  if (mode === "update") {
+    console.log(`   🔍 Checking existing documents...`);
+    existingIds = await getExistingDocIds(collectionName);
+    console.log(`   ℹ️  Found ${existingIds.size} existing documents`);
+  }
 
   const batchSize = 500; // Firestore batch limit
   let successCount = 0;
   let errorCount = 0;
+  let skippedCount = 0;
 
   for (let i = 0; i < data.length; i += batchSize) {
     const batch = db.batch();
     const chunk = data.slice(i, i + batchSize);
+    let batchCount = 0;
 
     chunk.forEach((item) => {
       try {
         // Use _id from data if available, otherwise auto-generate
         const docId = useIdField && item._id ? item._id : undefined;
+
+        // Skip if in update mode and document already exists
+        if (mode === "update" && docId && existingIds.has(docId)) {
+          skippedCount++;
+          return;
+        }
+
         const docRef = docId
           ? db.collection(collectionName).doc(docId)
           : db.collection(collectionName).doc();
@@ -218,29 +297,42 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true) {
         // Remove _id from data if it exists (it's stored as document ID)
         const { _id, ...dataWithoutId } = item;
 
-        batch.set(docRef, dataWithoutId);
-        successCount++;
+        // Use set with merge in force mode, regular set otherwise
+        if (mode === "force") {
+          batch.set(docRef, dataWithoutId, { merge: true });
+        } else {
+          batch.set(docRef, dataWithoutId);
+        }
+
+        batchCount++;
       } catch (error) {
         console.error(`❌ Error preparing document:`, error.message);
         errorCount++;
       }
     });
 
-    try {
-      await batch.commit();
-      console.log(`✅ Batch ${Math.floor(i / batchSize) + 1} committed (${chunk.length} documents)`);
-    } catch (error) {
-      console.error(`❌ Batch commit failed:`, error.message);
-      errorCount += chunk.length;
-      successCount -= chunk.length;
+    // Only commit if there are documents in the batch
+    if (batchCount > 0) {
+      try {
+        await batch.commit();
+        successCount += batchCount;
+        console.log(`✅ Batch ${Math.floor(i / batchSize) + 1} committed (${batchCount} documents)`);
+      } catch (error) {
+        console.error(`❌ Batch commit failed:`, error.message);
+        errorCount += batchCount;
+        successCount -= batchCount;
+      }
+    } else if (chunk.length > 0) {
+      console.log(`⏭️  Batch ${Math.floor(i / batchSize) + 1} skipped (all ${chunk.length} documents already exist)`);
     }
   }
 
   console.log(`\n📊 Collection: ${collectionName}`);
   console.log(`   ✅ Success: ${successCount}`);
+  console.log(`   ⏭️  Skipped: ${skippedCount}`);
   console.log(`   ❌ Failed: ${errorCount}`);
 
-  return { successCount, errorCount };
+  return { successCount, errorCount, skippedCount };
 }
 
 // ------------------------------------------------------------
@@ -273,14 +365,14 @@ async function buildCategoryMapping(categoriesData) {
 // ------------------------------------------------------------
 // 🔹 Migrate Categories
 // ------------------------------------------------------------
-async function migrateCategories(categoryFiles) {
+async function migrateCategories(categoryFiles, mode) {
   console.log("\n" + "=".repeat(60));
   console.log("🏷️  MIGRATING CATEGORIES");
   console.log("=".repeat(60));
 
   if (categoryFiles.length === 0) {
     console.log("⚠️  No category files found");
-    return { successCount: 0, errorCount: 0, data: [] };
+    return { successCount: 0, errorCount: 0, skippedCount: 0, data: [] };
   }
 
   let allCategoriesData = [];
@@ -298,7 +390,7 @@ async function migrateCategories(categoryFiles) {
     allCategoriesData = [...allCategoriesData, ...transformedData];
   }
 
-  const result = await batchWriteToFirestore(COLLECTIONS.CATEGORIES, allCategoriesData, true);
+  const result = await batchWriteToFirestore(COLLECTIONS.CATEGORIES, allCategoriesData, true, mode);
 
   return { ...result, data: allCategoriesData };
 }
@@ -306,18 +398,19 @@ async function migrateCategories(categoryFiles) {
 // ------------------------------------------------------------
 // 🔹 Migrate Prompts
 // ------------------------------------------------------------
-async function migratePrompts(promptFiles, categoryMapping) {
+async function migratePrompts(promptFiles, categoryMapping, mode) {
   console.log("\n" + "=".repeat(60));
   console.log("📝 MIGRATING PROMPTS");
   console.log("=".repeat(60));
 
   if (promptFiles.length === 0) {
     console.log("⚠️  No prompt files found");
-    return { successCount: 0, errorCount: 0 };
+    return { successCount: 0, errorCount: 0, skippedCount: 0 };
   }
 
   let totalSuccess = 0;
   let totalErrors = 0;
+  let totalSkipped = 0;
 
   for (const fileName of promptFiles) {
     console.log(`\n📂 Processing ${fileName}...`);
@@ -347,33 +440,36 @@ async function migratePrompts(promptFiles, categoryMapping) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }));
 
-    const result = await batchWriteToFirestore(COLLECTIONS.PROMPTS, transformedData, true);
+    const result = await batchWriteToFirestore(COLLECTIONS.PROMPTS, transformedData, true, mode);
     totalSuccess += result.successCount;
     totalErrors += result.errorCount;
+    totalSkipped += result.skippedCount;
   }
 
   console.log(`\n📊 TOTAL PROMPTS:`);
   console.log(`   ✅ Success: ${totalSuccess}`);
+  console.log(`   ⏭️  Skipped: ${totalSkipped}`);
   console.log(`   ❌ Failed: ${totalErrors}`);
 
-  return { successCount: totalSuccess, errorCount: totalErrors };
+  return { successCount: totalSuccess, errorCount: totalErrors, skippedCount: totalSkipped };
 }
 
 // ------------------------------------------------------------
 // 🔹 Migrate Prompt Details
 // ------------------------------------------------------------
-async function migratePromptDetails(promptDetailFiles) {
+async function migratePromptDetails(promptDetailFiles, mode) {
   console.log("\n" + "=".repeat(60));
   console.log("📄 MIGRATING PROMPT DETAILS");
   console.log("=".repeat(60));
 
   if (promptDetailFiles.length === 0) {
     console.log("⚠️  No prompt detail files found");
-    return { successCount: 0, errorCount: 0 };
+    return { successCount: 0, errorCount: 0, skippedCount: 0 };
   }
 
   let totalSuccess = 0;
   let totalErrors = 0;
+  let totalSkipped = 0;
 
   for (const fileName of promptDetailFiles) {
     console.log(`\n📂 Processing ${fileName}...`);
@@ -386,16 +482,18 @@ async function migratePromptDetails(promptDetailFiles) {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     }));
 
-    const result = await batchWriteToFirestore(COLLECTIONS.PROMPT_DETAILS, transformedData, true);
+    const result = await batchWriteToFirestore(COLLECTIONS.PROMPT_DETAILS, transformedData, true, mode);
     totalSuccess += result.successCount;
     totalErrors += result.errorCount;
+    totalSkipped += result.skippedCount;
   }
 
   console.log(`\n📊 TOTAL PROMPT DETAILS:`);
   console.log(`   ✅ Success: ${totalSuccess}`);
+  console.log(`   ⏭️  Skipped: ${totalSkipped}`);
   console.log(`   ❌ Failed: ${totalErrors}`);
 
-  return { successCount: totalSuccess, errorCount: totalErrors };
+  return { successCount: totalSuccess, errorCount: totalErrors, skippedCount: totalSkipped };
 }
 
 // ------------------------------------------------------------
@@ -423,7 +521,19 @@ async function main() {
   console.log("=".repeat(60));
 
   try {
-    // Step 1: Discover all JSON files in storage
+    // Step 1: Determine migration mode
+    const mode = await determineMigrationMode();
+    console.log(`\n📋 Migration Mode: ${mode.toUpperCase()}`);
+
+    if (mode === "fresh") {
+      console.log("   ➜ Will import all data (delete and re-import)");
+    } else if (mode === "update") {
+      console.log("   ➜ Will only add new documents (skip existing)");
+    } else if (mode === "force") {
+      console.log("   ➜ Will update all documents (overwrite existing)");
+    }
+
+    // Step 2: Discover all JSON files in storage
     const allFiles = await listFilesInStorage();
 
     if (allFiles.length === 0) {
@@ -431,32 +541,38 @@ async function main() {
       return;
     }
 
-    // Step 2: Categorize files by type
+    // Step 3: Categorize files by type
     const categorizedFiles = categorizeFiles(allFiles);
 
-    // Step 3: Migrate categories first
-    const categoriesResult = await migrateCategories(categorizedFiles.categories);
+    // Step 4: Migrate categories first
+    const categoriesResult = await migrateCategories(categorizedFiles.categories, mode);
 
-    // Step 4: Build category mapping for linking prompts
+    // Step 5: Build category mapping for linking prompts
     let categoryMapping = null;
     if (categoriesResult.data && categoriesResult.data.length > 0) {
       categoryMapping = await buildCategoryMapping(categoriesResult.data);
     }
 
-    // Step 5: Migrate prompts with category links
-    const promptsResult = await migratePrompts(categorizedFiles.prompts, categoryMapping);
+    // Step 6: Migrate prompts with category links
+    const promptsResult = await migratePrompts(categorizedFiles.prompts, categoryMapping, mode);
 
-    // Step 6: Migrate prompt details
-    const promptDetailsResult = await migratePromptDetails(categorizedFiles.promptDetails);
+    // Step 7: Migrate prompt details
+    const promptDetailsResult = await migratePromptDetails(categorizedFiles.promptDetails, mode);
 
     // Summary
     console.log("\n" + "=".repeat(60));
     console.log("✅ MIGRATION COMPLETE");
     console.log("=".repeat(60));
     console.log("\n📊 SUMMARY:");
-    console.log(`   Categories: ${categoriesResult.successCount} success, ${categoriesResult.errorCount} errors`);
-    console.log(`   Prompts: ${promptsResult.successCount} success, ${promptsResult.errorCount} errors`);
-    console.log(`   Prompt Details: ${promptDetailsResult.successCount} success, ${promptDetailsResult.errorCount} errors`);
+    console.log(`   Categories: ${categoriesResult.successCount} added, ${categoriesResult.skippedCount} skipped, ${categoriesResult.errorCount} errors`);
+    console.log(`   Prompts: ${promptsResult.successCount} added, ${promptsResult.skippedCount} skipped, ${promptsResult.errorCount} errors`);
+    console.log(`   Prompt Details: ${promptDetailsResult.successCount} added, ${promptDetailsResult.skippedCount} skipped, ${promptDetailsResult.errorCount} errors`);
+
+    const totalAdded = categoriesResult.successCount + promptsResult.successCount + promptDetailsResult.successCount;
+    const totalSkipped = categoriesResult.skippedCount + promptsResult.skippedCount + promptDetailsResult.skippedCount;
+    const totalErrors = categoriesResult.errorCount + promptsResult.errorCount + promptDetailsResult.errorCount;
+
+    console.log(`\n   📈 TOTALS: ${totalAdded} added, ${totalSkipped} skipped, ${totalErrors} errors`);
 
     displayIndexInstructions();
 
