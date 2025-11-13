@@ -66,9 +66,9 @@ async function checkCollection(collectionName) {
         const keys = Object.keys(data).slice(0, 5);
         keys.forEach(key => {
           let value = data[key];
-          if (typeof value === 'object' && value !== null) {
+          if (typeof value === "object" && value !== null) {
             value = JSON.stringify(value).substring(0, 50) + "...";
-          } else if (typeof value === 'string' && value.length > 50) {
+          } else if (typeof value === "string" && value.length > 50) {
             value = value.substring(0, 50) + "...";
           }
           console.log(`   ${key}: ${value}`);

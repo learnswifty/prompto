@@ -40,7 +40,7 @@ async function inspectFile(fileName) {
     const [contents] = await file.download();
     const data = JSON.parse(contents.toString());
 
-    console.log(`\n📊 Root structure type: ${Array.isArray(data) ? 'Array' : 'Object'}`);
+    console.log(`\n📊 Root structure type: ${Array.isArray(data) ? "Array" : "Object"}`);
 
     if (Array.isArray(data)) {
       console.log(`📊 Array length: ${data.length}`);
@@ -48,8 +48,8 @@ async function inspectFile(fileName) {
         console.log(`\n📝 First item structure:`);
         console.log(JSON.stringify(data[0], null, 2).substring(0, 500));
       }
-    } else if (typeof data === 'object') {
-      console.log(`📊 Object keys: ${Object.keys(data).join(', ')}`);
+    } else if (typeof data === "object") {
+      console.log(`📊 Object keys: ${Object.keys(data).join(", ")}`);
 
       // Check if any property is an array
       for (const [key, value] of Object.entries(data)) {

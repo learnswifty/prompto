@@ -80,7 +80,7 @@ async function testGetCategoryList(categoryId) {
         console.log(`   Page: ${data.page}/${data.totalPages}`);
         console.log(`\n📄 Sample prompt:`);
         console.log(`   ID: ${data.data[0]._id}`);
-        console.log(`   Prompt: ${(data.data[0].prompt || '').substring(0, 60)}...`);
+        console.log(`   Prompt: ${(data.data[0].prompt || "").substring(0, 60)}...`);
         return data.data[0]._id; // Return first prompt ID for next test
       } else {
         console.log(`⚠️  WARNING: Category exists but has no prompts`);
@@ -125,8 +125,8 @@ async function testGetPromptDetails(promptId) {
     if (data.success && data.data) {
       console.log(`✅ PASS: Found prompt details`);
       console.log(`   ID: ${data.data._id}`);
-      console.log(`   Has prompt: ${data.data.prompt ? 'Yes' : 'No'}`);
-      console.log(`   Has fullprompt: ${data.data.fullprompt ? 'Yes' : 'No'}`);
+      console.log(`   Has prompt: ${data.data.prompt ? "Yes" : "No"}`);
+      console.log(`   Has fullprompt: ${data.data.fullprompt ? "Yes" : "No"}`);
       return true;
     } else {
       console.log(`❌ FAIL: ${data.message}`);
@@ -180,9 +180,9 @@ async function main() {
   const total = Object.keys(results).length;
 
   console.log(`\nResults:`);
-  console.log(`   ${results.getCategory ? '✅' : '❌'} GET  /getCategory`);
-  console.log(`   ${results.getCategoryList ? '✅' : '❌'} POST /getCategoryList`);
-  console.log(`   ${results.getPromptDetails ? '✅' : '❌'} POST /getPromptDetails`);
+  console.log(`   ${results.getCategory ? "✅" : "❌"} GET  /getCategory`);
+  console.log(`   ${results.getCategoryList ? "✅" : "❌"} POST /getCategoryList`);
+  console.log(`   ${results.getPromptDetails ? "✅" : "❌"} POST /getPromptDetails`);
 
   console.log(`\n📈 Score: ${passed}/${total} tests passed`);
 

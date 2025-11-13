@@ -33,9 +33,9 @@ async function checkPrompts() {
   snapshot.docs.forEach((doc, index) => {
     const data = doc.data();
     console.log(`\n${index + 1}. Document ID: ${doc.id}`);
-    console.log(`   Has categoryId: ${data.categoryId ? '✅ YES (' + data.categoryId + ')' : '❌ NO'}`);
-    console.log(`   Has prompt: ${data.prompt ? '✅ YES' : '❌ NO'}`);
-    console.log(`   Has thumb_url: ${data.thumb_url ? '✅ YES' : '❌ NO'}`);
+    console.log(`   Has categoryId: ${data.categoryId ? "✅ YES (" + data.categoryId + ")" : "❌ NO"}`);
+    console.log(`   Has prompt: ${data.prompt ? "✅ YES" : "❌ NO"}`);
+    console.log(`   Has thumb_url: ${data.thumb_url ? "✅ YES" : "❌ NO"}`);
   });
 }
 

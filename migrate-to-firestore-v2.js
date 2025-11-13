@@ -256,7 +256,8 @@ async function migrateCategories(categoryFiles, mode) {
         return;
       }
 
-      // Remove _id from data
+      // Remove _id and id from data (they're used as document ID)
+      // eslint-disable-next-line no-unused-vars
       const { _id, id, ...cleanData } = item;
 
       allCategoriesData.push({
@@ -316,7 +317,8 @@ async function migratePrompts(promptFiles, categoryMapping, mode) {
         return;
       }
 
-      // Remove _id from data
+      // Remove _id and id from data (they're used as document ID)
+      // eslint-disable-next-line no-unused-vars
       const { _id, id, ...cleanData } = item;
 
       allPromptsData.push({
