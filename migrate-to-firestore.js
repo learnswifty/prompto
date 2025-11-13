@@ -295,6 +295,7 @@ async function batchWriteToFirestore(collectionName, data, useIdField = true, mo
           : db.collection(collectionName).doc();
 
         // Remove _id from data if it exists (it's stored as document ID)
+        // eslint-disable-next-line no-unused-vars
         const { _id, ...dataWithoutId } = item;
 
         // Use set with merge in force mode, regular set otherwise
