@@ -15,20 +15,20 @@
 // ------------------------------------------------------------
 
 import admin from "firebase-admin";
-// import { readFileSync } from "fs";
-// import { resolve } from "path";
+import { readFileSync } from "fs";
+import { resolve } from "path";
 
 // ------------------------------------------------------------
 // 🔹 Initialize Firebase Admin SDK
 // ------------------------------------------------------------
-// Uncomment and configure your service account
-// const serviceAccount = JSON.parse(
-//   readFileSync(resolve("./serviceAccountKey.json"), "utf8")
-// );
+// Load service account key
+const serviceAccount = JSON.parse(
+  readFileSync(resolve("./serviceAccountKey.json"), "utf8")
+);
 
 if (!admin.apps.length) {
   admin.initializeApp({
-    // credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(serviceAccount),
     storageBucket: "prompto-4b381.firebasestorage.app",
   });
 }
